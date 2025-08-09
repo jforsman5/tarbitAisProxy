@@ -1,14 +1,16 @@
 {
-  "name": "ais-cache-proxy",
+  "name": "tarbit-ais-proxy",
   "version": "1.0.0",
+  "description": "Proxy och molnsynk för AIS-data",
   "type": "module",
-  "engines": {
-    "node": ">=18"
-  },
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
