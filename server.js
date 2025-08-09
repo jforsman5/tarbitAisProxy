@@ -1,55 +1,59 @@
 import express from "express";
-import fetch from "node-fetch";
 
+// --- Konfig ---
 const PORT = process.env.PORT || 3000;
 
-// Din AIS-proxy
+// Din AIS-proxy (Render-servicen du redan kör)
 const AIS_PROXY_URL = "https://tarbitaisproxy.onrender.com/positions";
 
-// Här sparas senaste kända data
+// Cache i minnet – så senaste kända data ligger kvar
 let latestData = {};
 let lastUpdated = null;
 
-// Funktion för att hämta och lagra data från proxyn
+// Hämtar från proxyn och uppdaterar cachen
 async function updateAISData() {
-    try {
-        const res = await fetch(AIS_PROXY_URL);
-        const json = await res.json();
+  try {
+    const res = await fetch(AIS_PROXY_URL, { headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error(`Bad status ${res.status}`);
+    const json = await res.json();
 
-        if (json && Object.keys(json).length > 0) {
-            latestData = json;
-            lastUpdated = new Date().toISOString();
-            console.log("Uppdaterade AIS-data:", latestData);
-        } else {
-            console.log("Ingen ny data från AIS, behåller senaste");
-        }
-    } catch (err) {
-        console.error("Fel vid hämtning av AIS-data:", err);
+    if (json && typeof json === "object" && Object.keys(json).length > 0) {
+      latestData = json;
+      lastUpdated = new Date().toISOString();
+      console.log("[AIS] Data updated", lastUpdated);
+    } else {
+      console.log("[AIS] No new data, keeping previous cache");
     }
+  } catch (err) {
+    console.error("[AIS] Fetch error:", err.message || err);
+  }
 }
 
-// Hämta data var 2:e minut
+// Polla var 2:e minut
 setInterval(updateAISData, 120000);
 updateAISData();
 
-// Starta servern
+// --- HTTP ---
 const app = express();
 
-// Statuskontroll
-app.get("/", (req, res) => {
-    res.json({ status: "ok", lastUpdated });
+// CORS för att Netlify ska kunna hämta
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  next();
 });
 
-// Endpoint som frontend kan hämta
+app.get("/", (req, res) => {
+  res.json({ ok: true, lastUpdated });
+});
+
+// Frontend kan hämta här
 app.get("/positions", (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.json({
-        lastUpdated,
-        positions: latestData
-    });
+  res.json({
+    lastUpdated,
+    positions: latestData
+  });
 });
 
 app.listen(PORT, () => {
-    console.log(`HTTP server körs på port ${PORT}`);
+  console.log("HTTP listening on", PORT);
 });
-
