@@ -1,40 +1,34 @@
 import express from "express";
 import { WebSocket } from "ws";
 
-/* ========== Konfig ========== */
+/* ========= Config ========= */
 const PORT = process.env.PORT || 3000;
-// Miljövariabel om du har – annars fallback till din nyckel:
 const API_KEY = process.env.AIS_API_KEY || "e5cd993650ca18fa4924f1b0da684e89a642c964";
 
-// Bit Power & Bit Force – som STRÄNGAR (AISstream kräver det i filtret)
-const MMSI_STR = ["244944000", "244813000"];
+// Bit Power & Bit Force – som STRÄNGAR
+const MMSI = ["244944000", "244813000"];
 
-/* ========== State ========== */
-const latest = new Map();        // mmsi -> { lat, lon, sogKnots, navStatus, ts }
-let ws;                          // WebSocket
-let pingTimer;                   // keep-alive
+/* ========= State ========= */
+const latest = new Map();
+let ws;
+let pingTimer;
 let msgCount = 0;
 let lastMsgAt = null;
-let lastRaw = "";                // senaste råa meddelandet (för /peek)
+let lastRaw = "";
 
-/* ========== WS-anslutning ========== */
+/* ========= Connect ========= */
 function connect() {
   console.log("Connecting to AISstream…");
   ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
 
   ws.on("open", () => {
-    console.log("WS open, sending subscribe…");
-
-    // Viktigt: MMSI som STRÄNGAR + global BoundingBox.
-    // Börja med att bara be om PositionReport. Om du mot
-    // förmodan får 'Malformed' i /peek, testa att ta bort MessageTypes.
+    console.log("WS open, sending minimal subscribe (MMSI only) …");
+    // *** MINIMAL SUBSCRIBE: bara MMSI-filter ***
     const sub = {
       APIKey: API_KEY,
-      BoundingBoxes: [[[-90, -180], [90, 180]]],
-      FiltersShipMMSI: MMSI_STR,
-      MessageTypes: ["PositionReport"]
+      FiltersShipMMSI: MMSI
+      // Inga BoundingBoxes, inga MessageTypes
     };
-
     console.log("Subscribe object:", JSON.stringify(sub));
     ws.send(JSON.stringify(sub));
 
@@ -44,42 +38,40 @@ function connect() {
 
   ws.on("message", (raw) => {
     const txt = raw.toString();
-    lastRaw = txt;                         // spara för /peek
+    lastRaw = txt; // för /peek
 
-    try {
-      const msg = JSON.parse(txt);
-      msgCount++;
-      lastMsgAt = new Date().toISOString();
+    // Vissa server-svar kan vara plain text, så fånga JSON försiktigt
+    let obj = null;
+    try { obj = JSON.parse(txt); } catch { /* ignore */ }
 
-      // AISstream kan skicka fel som { error: "..." }
-      if (msg?.error) {
-        console.error("AISstream error:", msg.error);
-        return;
-      }
+    // Logga ev. fel från servern
+    if (obj && obj.error) {
+      console.error("AISstream error:", obj.error);
+      return;
+    }
 
-      // MMSI sitter i MetaData.MMSI
-      const mm = String(msg?.MetaData?.MMSI || "");
-      if (!mm || !MMSI_STR.includes(mm)) return;
+    msgCount++;
+    lastMsgAt = new Date().toISOString();
 
-      // Plocka ut bästa fälten vi kan hitta
-      const m = msg?.Message?.PositionReport || msg?.Message || {};
-      const lat = m.Latitude ?? m.Lat ?? null;
-      const lon = m.Longitude ?? m.Lon ?? null;
-      const sog = m.Sog ?? m.SOG ?? m.SpeedOverGround ?? null;
-      const nav = m.NavigationalStatus ?? m.NavigationStatus ?? null;
+    // MMSI sitter i MetaData.MMSI
+    const mm = obj?.MetaData?.MMSI ? String(obj.MetaData.MMSI) : null;
+    if (!mm || !MMSI.includes(mm)) return;
 
-      // Spara om vi har nån nyttig data
-      if (lat != null || lon != null || sog != null) {
-        latest.set(mm, {
-          mmsi: mm,
-          lat, lon,
-          sogKnots: sog,
-          navStatus: nav,
-          ts: msg?.MetaData?.time_utc || new Date().toISOString()
-        });
-      }
-    } catch (e) {
-      console.error("parse error:", e?.message || e);
+    // Försök plocka position/fart/status ur olika fält
+    const m = obj?.Message?.PositionReport || obj?.Message || {};
+    const lat = m.Latitude ?? m.Lat ?? null;
+    const lon = m.Longitude ?? m.Lon ?? null;
+    const sog = m.Sog ?? m.SOG ?? m.SpeedOverGround ?? null;
+    const nav = m.NavigationalStatus ?? m.NavigationStatus ?? null;
+
+    if (lat != null || lon != null || sog != null) {
+      latest.set(mm, {
+        mmsi: mm,
+        lat, lon,
+        sogKnots: sog,
+        navStatus: nav,
+        ts: obj?.MetaData?.time_utc || new Date().toISOString()
+      });
     }
   });
 
@@ -97,21 +89,18 @@ function connect() {
 
 connect();
 
-/* ========== HTTP API ========== */
+/* ========= HTTP ========= */
 const app = express();
 
-// Hälsokoll
 app.get("/", (req, res) => res.json({ ok: true }));
 
-// Senaste positioner
 app.get("/positions", (req, res) => {
   const out = {};
-  MMSI_STR.forEach(mm => { out[mm] = latest.get(mm) || null; });
+  MMSI.forEach(mm => { out[mm] = latest.get(mm) || null; });
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.json(out);
 });
 
-// Debug-info
 app.get("/debug", (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.json({
@@ -122,7 +111,6 @@ app.get("/debug", (req, res) => {
   });
 });
 
-// Titta på senaste råa meddelandet (bra vid fel som "Malformed")
 app.get("/peek", (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.type("application/json").send(lastRaw || '{"info":"No data yet"}');
